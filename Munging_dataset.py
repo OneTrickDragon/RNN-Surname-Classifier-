@@ -40,3 +40,9 @@ for _, item_list in sorted(by_nationality.items()):
     
     # Add to final list
     final_list.extend(item_list)
+
+
+
+final_surnames = pd.DataFrame(final_list)
+
+final_surnames.to_csv(args.output_munged_csv, index=False)
