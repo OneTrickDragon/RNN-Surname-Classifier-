@@ -351,10 +351,6 @@ def generate_batches(dataset, batch_size, shuffle=True,
 def column_gather(y_out, x_lengths):
     '''Get a specific vector from each batch datapoint in `y_out`.
 
-    More precisely, iterate over batch row indices, get the vector that's at
-    the position indicated by the corresponding value in `x_lengths` at the row
-    index.
-
     Args:
         y_out (torch.FloatTensor, torch.cuda.FloatTensor)
             shape: (batch, sequence, feature)
@@ -372,3 +368,75 @@ def column_gather(y_out, x_lengths):
         out.append(y_out[batch_index, column_index])
 
     return torch.stack(out)
+
+class ElmanRNN(nn.Module):
+    def __init__(self, input_size, hidden_size, batch_first = False):
+        super(ElmanRNN, self).__init__()
+        self.rnn_cell = nn.RNNCell(input_size, hidden_size)
+
+        self.batch_first = batch_first
+        self.hidden_size = hidden_size
+
+    
+    def _initial_hidden(self, batch_size):
+        return torch.zeros((batch_size, self.hidden_size))
+    
+    def forward_pass(self, x_in, initial_hidden = None):
+        if self.batch_first:
+            batch_size, seq_size, feat_size = x_in.size()
+            x_in = x_in.permute(1, 0, 2)
+        
+        else:
+            seq_size, batch_size, feat_size = x_in.size()
+
+        hiddens = []
+
+        if initial_hidden is None:
+            initial_hidden = self._initial_hidden(batch_size)
+            initial_hidden = initial_hidden.to(x_in.device)
+
+        hidden_t = initial_hidden
+
+        for t in range(seq_size):
+            hidden_t = self.rnn_cell(x_in[t], hidden_t)
+            hiddens.append(hidden_t)
+
+        hiddens = torch.stack(hiddens)
+
+        if self.batch_first:
+            hiddens = hiddens.permute(1,0,2)
+
+        return hiddens
+
+class SurnameClassifier(nn.Module):
+    def __init__(self, embedding_size, num_embeddings, num_classes,
+                 rnn_hidden_size, batch_first=True, padding_idx=0):
+        super(SurnameClassifier, self).__init__()
+
+        self.emb = nn.Embedding(num_embeddings=num_embeddings,
+                                embedding_dim=embedding_size,
+                                padding_idx=padding_idx)
+        
+        self.rnn = ElmanRNN(input_size=embedding_size, hidden_size=rnn_hidden_size, batch_first=batch_first)
+
+        self.fc1 = nn.Linear(in_features = rnn_hidden_size, out_features = rnn_hidden_size)
+        self.fc2 = nn.Linear(in_features = rnn_hidden_size, out_features = num_classes)
+
+
+        def forward(self, x_in, x_lengths=None, apply_softmax=False):
+            x_embedded = self.emb(x_in)
+            y_out = self.rnn(x_embedded)
+
+            if x_lengths is not None:
+                y_out = column_gather(y_out, x_lengths)
+
+            else:
+                y_out = y_out[:,-1, :]
+            
+            y_out = F.relu(self.fc1(F.dropout(y_out, 0.5)))
+            y_out = self.fc2(F.dropout(y_out, 0.5))
+
+            if apply_softmax:
+                y_out = F.softmax(y_out, dim=1)
+
+            return y_out
